@@ -42,6 +42,26 @@ interface CanvasWheelProps {
   disabled?: boolean;
 }
 
+interface WheelCache {
+  canvas: HTMLCanvasElement;
+  size: number;
+  namesKey: string;
+  slotCount: number;
+}
+
+/** Limita píxeles en iPad/móvil para mantener 60fps */
+function getEffectiveDpr(): number {
+  const raw = window.devicePixelRatio || 1;
+  const isCoarsePointer = window.matchMedia("(pointer: coarse)").matches;
+  const isTablet = window.matchMedia("(max-width: 1024px)").matches;
+
+  if (isCoarsePointer || isTablet) {
+    return Math.min(raw, 1.5);
+  }
+
+  return Math.min(raw, 2);
+}
+
 function formatSegmentNumber(index: number): string {
   const number = index + 1;
   return number < 100 ? String(number).padStart(2, "0") : "100";
@@ -127,7 +147,6 @@ function drawRadialLabel(
   return width;
 }
 
-/** Dibuja el nombre completo letra por letra, hacia el centro, debajo del número */
 function drawRadialFullName(
   ctx: CanvasRenderingContext2D,
   midAngle: number,
@@ -152,7 +171,6 @@ function drawRadialFullName(
     radius -= step;
 
     if (radius < minRadius) break;
-
     if (char === " ") continue;
 
     ctx.save();
@@ -273,10 +291,7 @@ function drawGoldDivider(
   ctx.restore();
 }
 
-function drawWeddingRings(
-  ctx: CanvasRenderingContext2D,
-  scale: number
-) {
+function drawWeddingRings(ctx: CanvasRenderingContext2D, scale: number) {
   ctx.save();
   ctx.strokeStyle = COLORS.bronze;
   ctx.lineWidth = 1.4 * scale;
@@ -339,7 +354,6 @@ function drawOuterGoldRing(
   center: number,
   radius: number
 ) {
-  ctx.save();
   ctx.beginPath();
   ctx.arc(center, center, radius, 0, TWO_PI);
   ctx.strokeStyle = COLORS.goldMid;
@@ -349,31 +363,40 @@ function drawOuterGoldRing(
   ctx.beginPath();
   ctx.arc(center, center, radius + 2, 0, TWO_PI);
   ctx.strokeStyle = COLORS.goldLight;
-  ctx.lineWidth = 1;
   ctx.globalAlpha = 0.6;
+  ctx.lineWidth = 1;
   ctx.stroke();
-  ctx.restore();
+  ctx.globalAlpha = 1;
 }
 
 function drawOrnatePointer(
   ctx: CanvasRenderingContext2D,
   center: number,
-  radius: number
+  radius: number,
+  lite: boolean
 ) {
   const tipY = center - radius - 10;
   const bodyHeight = 36;
   const halfWidth = 16;
 
   ctx.save();
-  ctx.shadowColor = "rgba(120, 90, 30, 0.3)";
-  ctx.shadowBlur = 10;
-  ctx.shadowOffsetY = 3;
+
+  if (!lite) {
+    ctx.shadowColor = "rgba(120, 90, 30, 0.3)";
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 3;
+  }
 
   ctx.beginPath();
   ctx.moveTo(center, tipY + bodyHeight);
   ctx.lineTo(center - halfWidth, tipY + 8);
   ctx.quadraticCurveTo(center - halfWidth * 0.6, tipY, center, tipY);
-  ctx.quadraticCurveTo(center + halfWidth * 0.6, tipY, center + halfWidth, tipY + 8);
+  ctx.quadraticCurveTo(
+    center + halfWidth * 0.6,
+    tipY,
+    center + halfWidth,
+    tipY + 8
+  );
   ctx.closePath();
 
   const pointerGradient = ctx.createLinearGradient(
@@ -404,6 +427,64 @@ function drawOrnatePointer(
   ctx.restore();
 }
 
+function buildWheelCache(
+  size: number,
+  names: string[],
+  segmentCount: number,
+  marblePattern: CanvasPattern | null
+): HTMLCanvasElement {
+  const cache = document.createElement("canvas");
+  cache.width = size;
+  cache.height = size;
+
+  const ctx = cache.getContext("2d");
+  if (!ctx) return cache;
+
+  const center = size / 2;
+  const radius = center - 36;
+  const segmentAngle = getSegmentAngle(segmentCount);
+  const hubRadius = radius * 0.12;
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, size, size);
+
+  ctx.save();
+  ctx.translate(center, center);
+
+  for (let i = 0; i < segmentCount; i++) {
+    const startAngle = i * segmentAngle;
+    const endAngle = startAngle + segmentAngle;
+    const isMarble = i % 2 === 1;
+
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, radius, startAngle, endAngle);
+    ctx.closePath();
+
+    if (isMarble) {
+      ctx.save();
+      ctx.clip();
+      drawMarbleFill(ctx, marblePattern, radius);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = i % 4 === 0 ? COLORS.cream : COLORS.creamAlt;
+      ctx.fill();
+    }
+
+    drawGoldDivider(ctx, startAngle, radius);
+
+    if (names[i]) {
+      drawSegmentLabels(ctx, i, names[i], startAngle, endAngle, radius, segmentCount);
+    }
+  }
+
+  drawGoldDivider(ctx, segmentCount * segmentAngle, radius);
+  drawCenterHub(ctx, hubRadius);
+  ctx.restore();
+
+  return cache;
+}
+
 export const CanvasWheel = forwardRef<CanvasWheelHandle, CanvasWheelProps>(
   function CanvasWheel(
     {
@@ -427,7 +508,9 @@ export const CanvasWheel = forwardRef<CanvasWheelHandle, CanvasWheelProps>(
     const onSpinEndRef = useRef(onSpinEnd);
     const onSpinStartRef = useRef(onSpinStart);
     const marblePatternRef = useRef<CanvasPattern | null>(null);
-    const sizeRef = useRef(920);
+    const wheelCacheRef = useRef<WheelCache | null>(null);
+    const sizeRef = useRef(600);
+    const canvasSizeRef = useRef({ size: 0, dpr: 0 });
 
     namesRef.current = names;
     spinPoolRef.current = spinPool;
@@ -435,92 +518,104 @@ export const CanvasWheel = forwardRef<CanvasWheelHandle, CanvasWheelProps>(
     onSpinEndRef.current = onSpinEnd;
     onSpinStartRef.current = onSpinStart;
 
-    const drawWheel = useCallback((rotation: number) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
+    const getNamesKey = useCallback((list: string[]) => list.join("\n"), []);
 
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-
+    const ensureMarblePattern = useCallback((ctx: CanvasRenderingContext2D) => {
       if (!marblePatternRef.current) {
         const marbleCanvas = createMarblePattern();
         marblePatternRef.current = ctx.createPattern(marbleCanvas, "repeat");
       }
+      return marblePatternRef.current;
+    }, []);
 
-      const dpr = window.devicePixelRatio || 1;
-      const size = sizeRef.current;
-      const center = size / 2;
-      const radius = center - 36;
+    const ensureWheelCache = useCallback(
+      (ctx: CanvasRenderingContext2D, size: number) => {
+        const namesKey = getNamesKey(namesRef.current);
+        const segmentCount = slotCountRef.current;
+        const cached = wheelCacheRef.current;
 
-      canvas.width = size * dpr;
-      canvas.height = size * dpr;
-      canvas.style.width = `${size}px`;
-      canvas.style.height = `${size}px`;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        if (
+          cached &&
+          cached.size === size &&
+          cached.namesKey === namesKey &&
+          cached.slotCount === segmentCount
+        ) {
+          return cached.canvas;
+        }
 
-      ctx.clearRect(0, 0, size, size);
+        const marblePattern = ensureMarblePattern(ctx);
+        const canvas = buildWheelCache(
+          size,
+          namesRef.current,
+          segmentCount,
+          marblePattern
+        );
 
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(center, center, radius + 14, 0, TWO_PI);
-      ctx.fillStyle = "rgba(180, 150, 90, 0.08)";
-      ctx.fill();
-      ctx.restore();
+        wheelCacheRef.current = {
+          canvas,
+          size,
+          namesKey,
+          slotCount: segmentCount,
+        };
 
-      const segmentCount = slotCountRef.current;
-      const currentNames = namesRef.current;
-      const segmentAngle = getSegmentAngle(segmentCount);
-      const marblePattern = marblePatternRef.current;
-      const hubRadius = radius * 0.12;
+        return canvas;
+      },
+      [ensureMarblePattern, getNamesKey]
+    );
 
-      ctx.save();
-      ctx.translate(center, center);
-      ctx.rotate(rotation);
+    const setupCanvasSize = useCallback(
+      (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D, size: number, dpr: number) => {
+        const pixelSize = Math.round(size * dpr);
+        const prev = canvasSizeRef.current;
 
-      for (let i = 0; i < segmentCount; i++) {
-        const startAngle = i * segmentAngle;
-        const endAngle = startAngle + segmentAngle;
-        const isMarble = i % 2 === 1;
+        if (prev.size !== size || prev.dpr !== dpr) {
+          canvas.width = pixelSize;
+          canvas.height = pixelSize;
+          canvasSizeRef.current = { size, dpr };
+        }
+
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      },
+      []
+    );
+
+    const drawWheel = useCallback(
+      (rotation: number, lite = false) => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+
+        const size = sizeRef.current;
+        if (size <= 0) return;
+
+        const dpr = getEffectiveDpr();
+        const center = size / 2;
+        const radius = center - 36;
+
+        setupCanvasSize(canvas, ctx, size, dpr);
+
+        const wheelCache = ensureWheelCache(ctx, size);
+
+        ctx.clearRect(0, 0, size, size);
 
         ctx.beginPath();
-        ctx.moveTo(0, 0);
-        ctx.arc(0, 0, radius, startAngle, endAngle);
-        ctx.closePath();
+        ctx.arc(center, center, radius + 14, 0, TWO_PI);
+        ctx.fillStyle = "rgba(180, 150, 90, 0.08)";
+        ctx.fill();
 
-        if (isMarble) {
-          ctx.save();
-          ctx.clip();
-          drawMarbleFill(ctx, marblePattern, radius);
-          ctx.restore();
-        } else {
-          ctx.fillStyle = i % 4 === 0 ? COLORS.cream : COLORS.creamAlt;
-          ctx.fill();
-        }
+        ctx.save();
+        ctx.translate(center, center);
+        ctx.rotate(rotation);
+        ctx.drawImage(wheelCache, -center, -center, size, size);
+        ctx.restore();
 
-        drawGoldDivider(ctx, startAngle, radius);
-
-        if (currentNames[i]) {
-          drawSegmentLabels(
-            ctx,
-            i,
-            currentNames[i],
-            startAngle,
-            endAngle,
-            radius,
-            segmentCount
-          );
-        }
-      }
-
-      drawGoldDivider(ctx, segmentCount * segmentAngle, radius);
-
-      drawCenterHub(ctx, hubRadius);
-
-      ctx.restore();
-
-      drawOuterGoldRing(ctx, center, radius);
-      drawOrnatePointer(ctx, center, radius);
-    }, []);
+        drawOuterGoldRing(ctx, center, radius);
+        drawOrnatePointer(ctx, center, radius, lite);
+      },
+      [ensureWheelCache, setupCanvasSize]
+    );
 
     const spin = useCallback(() => {
       const segmentCount = slotCountRef.current;
@@ -560,13 +655,13 @@ export const CanvasWheel = forwardRef<CanvasWheelHandle, CanvasWheelProps>(
 
         rotationRef.current =
           startRotation + (targetRotation - startRotation) * eased;
-        drawWheel(rotationRef.current);
+        drawWheel(rotationRef.current, true);
 
         if (progress < 1) {
           animFrameRef.current = requestAnimationFrame(animate);
         } else {
           rotationRef.current = targetRotation;
-          drawWheel(rotationRef.current);
+          drawWheel(rotationRef.current, false);
           isSpinningRef.current = false;
           animFrameRef.current = null;
           onSpinEndRef.current(winnerIndex);
@@ -584,8 +679,13 @@ export const CanvasWheel = forwardRef<CanvasWheelHandle, CanvasWheelProps>(
 
       const updateSize = () => {
         const rect = container.getBoundingClientRect();
-        sizeRef.current = Math.min(Math.max(rect.width, 360), 920);
-        drawWheel(rotationRef.current);
+        const nextSize = Math.floor(Math.min(rect.width, rect.height));
+
+        if (nextSize < 280) return;
+
+        sizeRef.current = Math.min(nextSize, 920);
+        wheelCacheRef.current = null;
+        drawWheel(rotationRef.current, isSpinningRef.current);
       };
 
       updateSize();
@@ -598,7 +698,8 @@ export const CanvasWheel = forwardRef<CanvasWheelHandle, CanvasWheelProps>(
 
     useEffect(() => {
       if (!isSpinningRef.current) {
-        drawWheel(rotationRef.current);
+        wheelCacheRef.current = null;
+        drawWheel(rotationRef.current, false);
       }
     }, [names, slotCount, drawWheel]);
 
@@ -613,11 +714,11 @@ export const CanvasWheel = forwardRef<CanvasWheelHandle, CanvasWheelProps>(
     return (
       <div
         ref={containerRef}
-        className="relative mx-auto aspect-square w-full"
+        className="relative mx-auto aspect-square w-full max-h-[min(85vw,920px)]"
       >
         <canvas
           ref={canvasRef}
-          className="block h-full w-full drop-shadow-xl"
+          className="block h-full w-full touch-none drop-shadow-xl"
           aria-label="Ruleta premium con 100 casillas"
         />
       </div>
