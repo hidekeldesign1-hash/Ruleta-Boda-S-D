@@ -6,6 +6,7 @@ import {
   type CanvasWheelHandle,
 } from "@/components/ui/canvas-wheel";
 import { FloralAccent } from "@/components/ui/floral-accent";
+import { ParticipantsList } from "@/components/ui/participants-list";
 import {
   formatWinnerLabel,
   getActiveGuests,
@@ -187,7 +188,7 @@ export function RaffleSection() {
   const canSpin = !isSpinning;
 
   return (
-    <section className="flex min-h-screen flex-col items-center px-6 py-10 lg:py-14">
+    <section className="flex flex-col items-center px-4 py-8 sm:px-6 sm:py-10 lg:py-12">
       <header className="mb-8 text-center lg:mb-10">
         <p className="mb-3 text-sm font-medium uppercase tracking-[0.3em] text-gold-600">
           Sorteo en vivo
@@ -200,7 +201,7 @@ export function RaffleSection() {
         </p>
       </header>
 
-      <div className="flex w-full max-w-4xl flex-1 flex-col items-center justify-center gap-8">
+      <div className="flex w-full max-w-5xl flex-col items-center gap-6 lg:gap-8">
         <div className="relative w-full max-w-[min(92vw,960px)]">
           <FloralAccent className="pointer-events-none absolute -left-6 top-1/2 hidden h-48 w-24 -translate-y-1/2 opacity-70 lg:block xl:-left-14 xl:h-56 xl:w-28" />
           <FloralAccent className="pointer-events-none absolute -right-6 top-1/2 hidden h-48 w-24 -translate-y-1/2 scale-x-[-1] opacity-70 lg:block xl:-right-14 xl:h-56 xl:w-28" />
@@ -231,6 +232,8 @@ export function RaffleSection() {
             La suerte está decidiendo…
           </p>
         )}
+
+        <ParticipantsList />
       </div>
 
       <CelebrationOverlay active={showModal} />
